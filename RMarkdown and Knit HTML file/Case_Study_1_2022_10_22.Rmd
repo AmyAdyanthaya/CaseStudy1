@@ -1,0 +1,336 @@
+---
+title: "6306 Case Study 1"
+author: "Amy Adyanthaya and Christopher Williams"
+date: "2022-10-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readxl)
+library(ggthemes)
+```
+
+# Load/Merge Data
+```{r}
+beers = read.csv("https://raw.githubusercontent.com/BivinSadler/MSDS_6306_Doing-Data-Science/Master/Unit%208%20and%209%20Case%20Study%201/Beers.csv")
+breweries = read.csv("https://raw.githubusercontent.com/BivinSadler/MSDS_6306_Doing-Data-Science/Master/Unit%208%20and%209%20Case%20Study%201/Breweries.csv")
+
+# find breweries listed twice, and determine which are the real listings
+dupes = breweries %>%
+  group_by(Name) %>%
+  filter(n()>1) %>%
+  summarise(n=n())
+#check duped breweries
+#breweries[breweries$Name %in% dupes$Name,] %>% view()
+
+# Remove white space in States
+breweries = breweries %>%
+  mutate(State =str_trim(State))
+beers = beers %>%
+  mutate(Style = str_trim(Style))
+
+# swap wrong brewery id for proper ones in beers data
+beers$Brewery_id[beers$Brewery_id %in% c(96,378,167,262,164,139)]
+idchanges = data.frame(old=c(96,378,504,262,164,139),new=c(13,457,167,276,372,59))
+for (i in 1:length(idchanges$old)) {
+  beers$Brewery_id[beers$Brewery_id==idchanges$old[i]] = idchanges$new[i]
+}
+```
+
+
+# QOIs
+
+```{r}
+# merge beers and brewery data
+bnb = beers %>%
+  left_join(breweries,by=c("Brewery_id" = "Brew_ID"), suffix = c(".beer",".brewery"))
+head(bnb)
+tail(bnb)
+
+```
+
+## How many breweries are present in each state?
+Looking only at breweries that have at least one recorded beer, we found the following number of breweries per state.
+```{r}
+# breweries with no beer, probably don't matter
+library(usdata)
+#get state names from abbreviations
+bnb_temp = bnb
+bnb_temp = bnb_temp %>%
+  mutate(StateLN = abbr2state(State))
+# find num breweries per state
+brew_state = bnb_temp %>%
+  group_by(StateLN) %>%
+  summarise(n_brew = length(unique(Brewery_id)))
+# concatenate state name and num breweries
+brew_state_str = brew_state %>%
+  unite(brew_state,StateLN,n_brew,sep = " - ")
+#add * to max brewery state
+brew_state_str = brew_state_str %>%
+  mutate(brew_state = if_else(str_detect(brew_state_str$brew_state,"Colorado"),
+                              paste(brew_state,"*",sep = ""),
+                              brew_state))
+brew_state
+#write to csv file
+#write.csv(brew_state_str, "breweries_per_state.csv", row.names = F)
+
+```
+
+
+
+## Address the missing values in each column.
+
+```{r}
+colSums(is.na(bnb_temp))
+dim(bnb)
+```
+Nearly half the beers are missing an IBU value, will simply omit these beers when assessing IBU values.  
+Only 62 beers are missing an ABV value, we generalize the 99 beer styles to 15 categories to have a substantive number of beers per category. Then assigning the median ABV for a category to any beers missing an ABV within that category.
+
+```{r}
+#working with the styles
+beer_styles = read.csv("~/MSDS SMU/6306_Doing_Data_Science/Unit 8-9 - Case Study/BeerStyle.csv", encoding = "UTF-8")
+# fix missing styles
+bnb_temp$Style[bnb_temp$Beer_ID==1635] = "Scottish Ale"
+bnb_temp$Style[bnb_temp$Beer_ID==2527] = "Märzen / Oktoberfest"
+bnb_temp = bnb_temp[!(bnb_temp$Beer_ID%in%c(1796,1790,2210)),]
+# create new column of broader category
+bnb_temp = bnb_temp %>% filter(Style!="")%>%
+  mutate(Category = beer_styles$Category[match(Style,beer_styles$Style[row_number()])])
+```
+
+```{r}
+#make 2 new abv columns, filling in missing obs with median of style and mean of category
+#category
+bnb_temp = bnb_temp %>%
+  group_by(Category) %>%
+  mutate(ABV.cat = if_else(is.na(ABV),median(ABV[!is.na(ABV)]),ABV)) %>%
+  ungroup()
+#style
+bnb_temp = bnb_temp %>%
+  group_by(Style) %>%
+  mutate(ABV.sty = if_else(is.na(ABV),median(ABV[!is.na(ABV)]),ABV)) %>%
+  ungroup()
+
+```
+
+
+
+## Compute the median alcohol content and international bitterness unit for each state. Plot a bar chart to compare.
+A bar chart visualizing the median ABV for each state and the top and bottom 3 states by ABV.
+```{r}
+library(scales)
+
+medBNB = bnb_temp %>%
+  group_by(State) %>%
+  summarise(median.ABV.cat = median(ABV.cat),
+            median.ABV.sty = median(ABV.sty),
+            median.IBU = median(IBU[!is.na(IBU)]))
+# ABV
+medBNB %>%
+  ggplot(aes(x = State,y = median.ABV.cat)) +
+  geom_col(aes(fill = State),color="black",show.legend = F) +
+  theme(axis.text.x = element_text(angle = 90,vjust = 0.5,hjust = 1)) +
+  labs(title = "Median ABV per State",
+       y = "Median ABV") +
+  scale_y_continuous(labels = percent)
+
+medBNB %>%
+  slice_max(median.ABV.cat,n=3)
+medBNB %>%
+  slice_min(median.ABV.cat,n=3)
+```
+
+A bar chart visualizing the median IBU for each state and the top and bottom 3 states by IBU.
+```{r}
+# IBU
+medBNB %>%
+  ggplot(aes(x = State,y = median.IBU)) +
+  geom_col(aes(fill = State),color="black",show.legend = F) +
+  theme(axis.text.x = element_text(angle = 90,vjust = 0.5,hjust = 1)) +
+  labs(title = "Median IBU per State",
+       y = "Median IBU")
+
+medBNB %>%
+  slice_max(median.IBU,n=3)
+medBNB %>%
+  slice_min(median.IBU,n=3)
+```
+
+All beers from breweries in South Dakota are missing their IBU values.
+
+
+## Which state has the maximum alcoholic (ABV) beer? Which state has the most bitter (IBU) beer?
+Here is the beer with the highest ABV, the ABV of said beer, and the state of origin.
+```{r}
+# max abv
+bnb_temp %>%
+  slice_max(ABV.cat) %>%
+  select(Name.beer,ABV.cat,StateLN)
+```
+
+Here is the beer with the highest IBU, the IBU of said beer, and the state of origin.
+```{r}
+#max ibu
+bnb_temp %>%
+  slice_max(IBU) %>%
+  select(Name.beer,IBU,StateLN)
+```
+
+
+## Comment on the summary statistics and distribution of the ABV variable.
+The 5 number summary, mean, standard deviation, and histogram of beer ABV.
+```{r}
+bnb_temp %>%
+  dplyr::select(ABV.cat) %>%
+  summary()
+
+bnb_temp %>%
+  dplyr::select(ABV.cat) %>%
+  summarise(sd.abv = sd(ABV.cat))
+
+
+bnb_temp %>% ggplot(aes(x=ABV.cat)) +
+  geom_histogram(aes(fill=Category), color = "black") +
+  labs(x = "ABV") +
+  scale_x_continuous(labels = percent) +
+  scale_fill_stata()
+
+#bnb_temp %>% ggplot(aes(x=IBU)) +
+#  geom_histogram(aes(fill=Category),color="black") +
+#  labs(title="IBU Distribution",
+#       x = "IBU")
+```
+
+## Is there an apparent relationship between the bitterness of the beer and its alcoholic content? Draw a scatter plot.  Make your best judgment of a relationship and EXPLAIN your answer.
+```{r}
+bnb_temp %>%
+  ggplot(aes(x=IBU,y=ABV.cat)) +
+  geom_point(aes(color = Category)) +
+  geom_smooth() +
+  labs(y="ABV") +
+  scale_y_continuous(labels = percent) +
+  scale_color_stata()
+cor(bnb_temp$IBU[!is.na(bnb_temp$IBU)],bnb_temp$ABV.cat[!is.na(bnb_temp$IBU)])
+```
+There appears to be a positive relationship that appears to be linear up until 100 IBU. In order to brew more bitter beers, brewers add more hops, and in order to balance the flavor they also add more malt, which results in higher ABV. Beer ABV generally tops out around 10% because most beer yeast is intolerant to high alcohol concentrations. Thus, requiring special and temperamental techniques to achieve beers with high ABV.
+
+# Ale vs IPA
+After combining all ale categories to a single grouping it appears as if there is a defined grouping between IPAs and non-IPA Ales.
+```{r}
+# generalize all ale types to one category
+alestyles = c("Dark Ale", "Brown Ale", "Pale Ale", "Strong Ale", "Wheat", "Stout", "Porter", "Sour Beer")
+bnb_temp = bnb_temp %>%
+  mutate(IPAorALE = factor(if_else(Category %in% alestyles, "Ale",
+                            if_else(Category == "IPA", "IPA", "Other"))))
+# remove non ipa/ales and beers with missing ibu values
+bnb_class = bnb_temp %>%
+  filter(IPAorALE %in% c("IPA","Ale") & !is.na(IBU)) %>%
+  dplyr::select(IPAorALE,ABV.cat,IBU,Beer_ID,Brewery_id)
+bnb_class = droplevels(bnb_class)
+bnb_class$IPAorALE = relevel(bnb_class$IPAorALE,ref = "IPA")
+
+bnb_class %>%
+  ggplot(aes(x=IBU,y=ABV.cat)) +
+  geom_point(aes(color = IPAorALE)) +
+  labs(y="ABV") +
+  scale_y_continuous(labels = percent) +
+  scale_color_wsj(name="Beer Type")
+```
+To illustrate the difference between IPAs and non-IPA Ales, we crafted classification models.
+## k-NN model
+Starting with a k-NN model, we found the optimal k to be 5, and the model to be quite accurate.
+```{r}
+library(caret)
+set.seed(4)
+trainIndices = sample(1:dim(bnb_class)[1],round(.7 * dim(bnb_class)[1]))
+train_bnb = bnb_class[trainIndices,]
+test_bnb = bnb_class[-trainIndices,]
+
+knn = train(IPAorALE~ABV.cat+IBU,train_bnb, method = "knn",
+            trControl=trainControl(method='cv',number=10))
+cat(paste("The optimal k =",knn$bestTune[1],"\n\n"))
+pred_knn = predict(knn,test_bnb)
+confusionMatrix(pred_knn,test_bnb$IPAorALE)
+
+```
+After this, in an attempt to increase the accuracy of our classification we created a Naive-Bayes and a Random Forest model, then aggregated the three models into an ensemble model.
+## Naive-Bayes
+```{r}
+library(e1071)
+
+nbay = train(IPAorALE~ABV.cat+IBU,train_bnb,method = "nb",
+             trControl=trainControl(method='cv',number=10))
+pred_nbay = predict(nbay,test_bnb)
+confusionMatrix(pred_nbay,test_bnb$IPAorALE)
+
+```
+
+## randomforest
+```{r}
+rfor = train(IPAorALE~ABV.cat+IBU,train_bnb,method = "ranger",
+             trControl=trainControl(method='cv',number = 10))
+pred_rfor = predict(rfor,test_bnb)
+confusionMatrix(pred_rfor,test_bnb$IPAorALE)
+```
+
+## ensemble
+```{r}
+predictions = data.frame(knn=pred_knn, nb=pred_nbay, rf=pred_rfor)
+predictions = predictions %>% rowwise() %>%
+  mutate(decision = factor(if_else(sum(c(knn,nb,rf)=="IPA")>1,"IPA","Ale"),levels = c("Ale","IPA")))
+confusionMatrix(predictions$decision,test_bnb$IPAorALE)
+```
+```{r}
+test_bnb %>%
+  ggplot(aes(x=IBU,y=ABV.cat)) +
+  geom_point(aes(color = IPAorALE,shape=predictions$decision)) +
+  labs(y="ABV") +
+  scale_color_wsj(name="Actual Beer Type") +
+  scale_shape(name="Predicted Beer Type") +
+  scale_y_continuous(labels = percent)
+```
+The ensemble model increased the accuracy by at least 2% over all three of the base models. The high accuracy of these models illustrates the difference between IPAs and other Ales with respect to IBU and ABV.
+
+# abv by category
+Looking to see if there is any difference between the beer categories in median ABV, we ran a Kruskal-Wallis test. The validity of the test, though, is questionable due to the lack of clarity with regard to the independence of the beer entries.
+```{r}
+bnb_temp %>%
+  ggplot(aes(y = ABV.cat, x = Category, color = Category)) +
+  geom_boxplot(show.legend = F) +
+  scale_color_stata() +
+  labs(title="ABV Distribution by Category",
+       y = "ABV") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+#normality & equal varaince violated anova not viable
+
+# H_0: Dist_i = Dist_j, for all i,j in Category
+# H_A: Dist_i =/= Dist_j for at least one i,j in Category
+fit = kruskal.test(ABV.cat~Category,bnb_temp)
+fit
+#Reject H_0
+```
+We found overwhelming evidence to suggest that at least one pair of beer categories have differing median ABVs. Proceeding with caution, due to the concerns with independence, we runn a multiple pairwise comparison Dunn's with a Bonferroni correction to identify which pairs have evidence of differing median ABVs.
+```{r}
+library(dunn.test)
+
+# for each pairwise comparison:
+#                               H_0: Dist_i = Dist_j
+#                               H_A: Dist_i =/= Dist_j
+# bonferroni adjustment means significance is p*105 < alpha
+
+fit_dunn = dunn.test(bnb_temp$ABV.cat,bnb_temp$Category,method = "bonferroni",wrap = T)
+
+```
+59 pairs of beer categories were found to have significant evidence of differing medians. Although, as previously mentioned, the validity of this finding is questionable, and we recommend further consultation and investigation.
+
+
+
+
+
+
+
+
+
