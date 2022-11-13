@@ -14,4 +14,8 @@ BeerStyles.csv
 ## Presentation
 Case_Study_1_2022-10-22_Final.pptx
 
-## RShiny_2022_11_13
+## Beer Github
+BeerDataRshiny
+app.R
+SP5/app.R
+
